@@ -112,6 +112,70 @@ def cmd_compress(args):
     return 0
 
 
+def cmd_semantic(args):
+    """Semantic search using embeddings."""
+    from .semantic import SemanticIndex
+    
+    query = " ".join(args.get("query", []))
+    if not query:
+        print("Usage: agent-memory semantic <query> [--dir=<dir>] [--key=<openai_key>]")
+        return 1
+    
+    memory_dir = args.get("dir") or find_memory_dir()
+    limit = int(args.get("limit", 5))
+    
+    # Get OpenAI key
+    openai_key = args.get("key") or os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        # Try to read from OpenClaw config
+        try:
+            import json
+            profiles = json.load(open(os.path.expanduser(
+                "~/.openclaw/agents/main/agent/auth-profiles.json")))
+            openai_key = profiles["profiles"]["openai:default"]["token"]
+        except Exception:
+            print("Error: No OpenAI API key. Set OPENAI_API_KEY or pass --key=")
+            return 1
+    
+    index_path = os.path.join(memory_dir, ".memory-index.json")
+    
+    # Try to load existing index
+    idx = None
+    if os.path.exists(index_path):
+        try:
+            idx = SemanticIndex.load(index_path, openai_key=openai_key)
+            print("📂 Loaded existing index, rebuilding incrementally...")
+        except Exception:
+            pass
+    
+    if idx is None:
+        idx = SemanticIndex(memory_dir, openai_key=openai_key)
+    
+    idx.build()
+    idx.save(index_path)
+    
+    stats = idx.stats()
+    print(f"🧠 Index: {stats['chunks']} chunks from {stats['files']} files (embed cost: {stats['estimated_embed_cost']})\n")
+    
+    results = idx.search(query, limit=limit)
+    
+    if not results:
+        print(f"No results for '{query}'")
+        return 0
+    
+    print(f"🔮 Semantic results for '{query}':\n")
+    for r in results:
+        pct = int(r.similarity * 100)
+        bar = "●" * (pct // 20) + "○" * (5 - pct // 20)
+        print(f"  [{bar}] {pct}% — {r.file}")
+        # Show first 200 chars of chunk
+        preview = r.chunk_text[:200].replace('\n', ' ')
+        print(f"    {preview}...")
+        print()
+    
+    return 0
+
+
 def cmd_stats(args):
     """Show index statistics."""
     from .index import MemoryIndex
@@ -163,6 +227,7 @@ def main():
     
     commands = {
         "search": cmd_search,
+        "semantic": cmd_semantic,
         "budget": cmd_budget,
         "wake": cmd_wake,
         "compress": cmd_compress,
