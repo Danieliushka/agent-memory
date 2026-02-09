@@ -79,6 +79,25 @@ def cmd_wake(args):
     return 0
 
 
+def cmd_promote(args):
+    """Scan daily logs for facts to promote to MEMORY.md."""
+    from .promote import scan_recent, format_candidates, apply_promotion
+    
+    memory_dir = args.get("dir") or find_memory_dir()
+    days = int(args.get("days", 7))
+    top_n = int(args.get("top", 15))
+    
+    candidates = scan_recent(memory_dir, days=days)
+    
+    if args.get("apply"):
+        memory_file = os.path.join(memory_dir, "MEMORY.md")
+        print(apply_promotion(candidates, memory_file, top_n=top_n))
+    else:
+        print(format_candidates(candidates, top_n=top_n))
+    
+    return 0
+
+
 def cmd_compress(args):
     """Compress weekly logs."""
     from .compress import compress_week
@@ -231,6 +250,7 @@ def main():
         "budget": cmd_budget,
         "wake": cmd_wake,
         "compress": cmd_compress,
+        "promote": cmd_promote,
         "stats": cmd_stats,
     }
     
