@@ -98,6 +98,27 @@ def format_budget(stats: List[FileStats], top_n: int = 20) -> str:
     return "\n".join(lines)
 
 
+def format_csv(stats: List[FileStats]) -> str:
+    """Format budget analysis as CSV (path,bytes,lines,tokens,pct)."""
+    total_tokens = sum(s.estimated_tokens for s in stats)
+    lines = ["path,bytes,lines,tokens,pct"]
+    for s in stats:
+        pct = (s.estimated_tokens / total_tokens * 100) if total_tokens > 0 else 0
+        lines.append(f"{s.path},{s.bytes},{s.lines},{s.estimated_tokens},{pct:.1f}")
+    return "\n".join(lines)
+
+
+def format_csv(stats: List[FileStats]) -> str:
+    """Format budget analysis as CSV."""
+    total_tokens = sum(s.estimated_tokens for s in stats)
+    lines = ["path,bytes,lines,tokens,pct"]
+    for s in stats:
+        pct = (s.estimated_tokens / total_tokens * 100) if total_tokens > 0 else 0
+        lines.append(f"{s.path},{s.bytes},{s.lines},{s.estimated_tokens},{pct:.1f}")
+    lines.append(f"TOTAL,{sum(s.bytes for s in stats)},{sum(s.lines for s in stats)},{total_tokens},100.0")
+    return "\n".join(lines)
+
+
 def wake_cost(memory_dir: str, wake_files: Optional[List[str]] = None) -> str:
     """
     Estimate the token cost of a typical wake sequence.

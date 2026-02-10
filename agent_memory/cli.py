@@ -1,18 +1,25 @@
 #!/usr/bin/env python3
 """
-agent-memory CLI — Memory management for AI agents.
+agent-memory — Memory management toolkit for AI agents.
 
 Usage:
     agent-memory search <query> [--dir=<dir>] [--limit=<n>]
-    agent-memory budget [--dir=<dir>] [--top=<n>]
+    agent-memory semantic <query> [--dir=<dir>] [--limit=<n>] [--key=<openai_key>]
+    agent-memory budget [--dir=<dir>] [--top=<n>] [--csv]
     agent-memory wake [--dir=<dir>]
-    agent-memory compress [--dir=<dir>] [--week=<date>]
+    agent-memory compress [--dir=<dir>] [--week=<date>] [--save]
+    agent-memory promote [--dir=<dir>] [--since=<days>] [--category=<cat>] [--top=<n>] [--apply] [--json]
     agent-memory stats [--dir=<dir>]
+    agent-memory version
+
+Categories for promote: decision, lesson, fact, contact, platform
 """
 
 import sys
 import os
 from pathlib import Path
+
+VERSION = "0.2.0"
 
 
 def find_memory_dir() -> str:
@@ -60,13 +67,17 @@ def cmd_search(args):
 
 def cmd_budget(args):
     """Show token budget analysis."""
-    from .budget import analyze_directory, format_budget
+    from .budget import analyze_directory, format_budget, format_csv
     
     memory_dir = args.get("dir") or find_memory_dir()
     top_n = int(args.get("top", 20))
     
     stats = analyze_directory(memory_dir)
-    print(format_budget(stats, top_n))
+    
+    if args.get("csv"):
+        print(format_csv(stats))
+    else:
+        print(format_budget(stats, top_n))
     return 0
 
 
@@ -81,17 +92,20 @@ def cmd_wake(args):
 
 def cmd_promote(args):
     """Scan daily logs for facts to promote to MEMORY.md."""
-    from .promote import scan_recent, format_candidates, apply_promotion
+    from .promote import scan_recent, format_candidates, format_json, apply_promotion
     
     memory_dir = args.get("dir") or find_memory_dir()
-    days = int(args.get("days", 7))
+    days = int(args.get("since", args.get("days", 7)))
     top_n = int(args.get("top", 15))
+    category = args.get("category")
     
-    candidates = scan_recent(memory_dir, days=days)
+    candidates = scan_recent(memory_dir, days=days, category=category)
     
     if args.get("apply"):
         memory_file = os.path.join(memory_dir, "MEMORY.md")
         print(apply_promotion(candidates, memory_file, top_n=top_n))
+    elif args.get("json"):
+        print(format_json(candidates, top_n=top_n))
     else:
         print(format_candidates(candidates, top_n=top_n))
     
@@ -115,10 +129,9 @@ def cmd_compress(args):
     print(result)
     
     # Optionally save
-    if "--save" in sys.argv:
+    if args.get("save") or "--save" in sys.argv:
         outdir = os.path.join(memory_subdir, "summaries")
         os.makedirs(outdir, exist_ok=True)
-        # Use week number for filename
         from datetime import timedelta
         d = week_date or (date.today() - timedelta(weeks=1))
         week_num = d.isocalendar()[1]
@@ -187,7 +200,6 @@ def cmd_semantic(args):
         pct = int(r.similarity * 100)
         bar = "●" * (pct // 20) + "○" * (5 - pct // 20)
         print(f"  [{bar}] {pct}% — {r.file}")
-        # Show first 200 chars of chunk
         preview = r.chunk_text[:200].replace('\n', ' ')
         print(f"    {preview}...")
         print()
@@ -244,6 +256,10 @@ def main():
     args = parse_args(sys.argv)
     cmd = args.get("command", "help")
     
+    if cmd == "version":
+        print(f"agent-memory {VERSION}")
+        return 0
+    
     commands = {
         "search": cmd_search,
         "semantic": cmd_semantic,
@@ -256,6 +272,7 @@ def main():
     
     if cmd == "help" or cmd not in commands:
         print(__doc__)
+        print(f"  version {VERSION}")
         return 0
     
     return commands[cmd](args)

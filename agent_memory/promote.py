@@ -1,12 +1,13 @@
 """
 Promote important facts from daily logs to long-term memory.
-Scans daily logs, extracts candidates, formats for MEMORY.md.
+v0.2: Section-aware promotion, category filters, JSON output.
 """
 
 import re
+import json
 from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Optional
+from dataclasses import dataclass, asdict
+from typing import List, Optional, Dict
 from datetime import date, timedelta
 
 
@@ -20,34 +21,50 @@ class PromoteCandidate:
     importance: float  # 0.0 - 1.0
 
 
+# Section mapping: category → MEMORY.md section header
+SECTION_MAP: Dict[str, List[str]] = {
+    "lesson": ["## Уроки", "## Lessons", "## Уроки (нові)"],
+    "decision": ["## Ключові рішення", "## Key Decisions", "## Рішення"],
+    "fact": ["## Ключове", "## Key Facts", "## Факти"],
+    "contact": ["## Контакти", "## Contacts", "## Мережа"],
+    "platform": ["## Платформи", "## Platforms", "## Інфра"],
+}
+
 # Patterns that indicate promotable content
 PATTERNS = {
     "decision": [
         r'(?:decided|decision|вирішив|рішення)',
-        r'(?:switched to|moved to|переїхав)',
+        r'(?:switched to|moved to|переїхав|перейшов)',
         r'(?:will use|буду використовувати)',
         r'(?:approved|підтверджено|confirmed)',
+        r'(?:abandoned|відмовились|забили|killed)',
     ],
     "lesson": [
         r'(?:урок|lesson|learned|зрозумів|insight)',
         r'(?:помилка|mistake|факап|fuckup|fix)',
         r'(?:не робити|don\'t|never again|більше не)',
         r'(?:краще|better to|should have)',
+        r'(?:важливо|important|critical|ключов)',
     ],
     "fact": [
         r'(?:LIVE|DONE|CLAIMED|PRODUCTION|DEPLOYED)',
         r'(?:підключ|connected|configured|встановлено|installed)',
         r'(?:створив|created|built|побудував|pushed)',
         r'(?:зареєструвався|registered|signed up)',
+        r'(?:v\d+\.\d+|version \d)',
     ],
     "contact": [
         r'(?:бартер|deal|клієнт|client)',
         r'(?:контакт|contact|friend|партнер)',
+        r'(?:collaboration|collab|співпраця)',
+        r'(?:replied|відповів|wrote to|написав)',
     ],
     "platform": [
         r'(?:API key|token|creds|credentials)',
         r'(?:repo|repository|github\.com)',
         r'(?:inbox|email|agentmail)',
+        r'(?:wallet|гаманець|address)',
+        r'(?:cron|service|systemd|deploy)',
     ],
 }
 
@@ -61,7 +78,7 @@ def score_line(line: str, category: str) -> float:
         score += 0.2
 
     # Emoji markers suggest importance
-    if any(e in line for e in ['✅', '❌', '⚠️', '🔑', '💡', '🚀']):
+    if any(e in line for e in ['✅', '❌', '⚠️', '🔑', '💡', '🚀', '🔥']):
         score += 0.15
 
     # Exclamation = emphasis
@@ -70,6 +87,12 @@ def score_line(line: str, category: str) -> float:
 
     # URLs = concrete reference
     if 'http' in line:
+        score += 0.1
+
+    # ALL CAPS words (excluding common headers) = emphasis
+    caps_words = re.findall(r'\b[A-Z]{3,}\b', line)
+    caps_words = [w for w in caps_words if w not in ('API', 'URL', 'SSH', 'CLI', 'SDK', 'HTTP', 'UTC', 'DM')]
+    if caps_words:
         score += 0.1
 
     # Category weights
@@ -117,12 +140,11 @@ def scan_file(filepath: Path) -> List[PromoteCandidate]:
                         importance=importance,
                     ))
                     break  # one match per category is enough
-            # Don't break outer loop — same line can match multiple categories
 
     return candidates
 
 
-def scan_recent(memory_dir: str, days: int = 7) -> List[PromoteCandidate]:
+def scan_recent(memory_dir: str, days: int = 7, category: Optional[str] = None) -> List[PromoteCandidate]:
     """Scan recent daily logs for promotable content."""
     memory_path = Path(memory_dir) / "memory"
     if not memory_path.exists():
@@ -141,6 +163,10 @@ def scan_recent(memory_dir: str, days: int = 7) -> List[PromoteCandidate]:
         mono_file = memory_path / "inner-monologue" / f"{day.isoformat()}.md"
         if mono_file.exists():
             candidates.extend(scan_file(mono_file))
+
+    # Filter by category if specified
+    if category:
+        candidates = [c for c in candidates if c.category == category]
 
     # Sort by importance descending, dedupe by text similarity
     candidates.sort(key=lambda c: c.importance, reverse=True)
@@ -192,8 +218,65 @@ def format_candidates(candidates: List[PromoteCandidate], top_n: int = 15) -> st
     return '\n'.join(lines)
 
 
+def format_json(candidates: List[PromoteCandidate], top_n: int = 15) -> str:
+    """Format candidates as JSON."""
+    items = []
+    for c in candidates[:top_n]:
+        items.append({
+            "text": c.text,
+            "source": c.source_file,
+            "line": c.line_num,
+            "category": c.category,
+            "importance": round(c.importance, 3),
+        })
+    return json.dumps(items, indent=2, ensure_ascii=False)
+
+
+def find_section(content: str, category: str) -> Optional[int]:
+    """Find the line number of the matching section in MEMORY.md."""
+    section_names = SECTION_MAP.get(category, [])
+    lines = content.split('\n')
+    
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        for name in section_names:
+            if stripped == name or stripped.startswith(name):
+                return i
+    return None
+
+
+def find_section_end(content: str, section_start: int) -> int:
+    """Find the end of a section (next ## header or EOF)."""
+    lines = content.split('\n')
+    for i in range(section_start + 1, len(lines)):
+        if lines[i].strip().startswith('## '):
+            return i
+    return len(lines)
+
+
+def check_already_present(text: str, existing_content: str) -> bool:
+    """Check if a candidate is already in MEMORY.md using phrase matching."""
+    existing_lower = existing_content.lower()
+    
+    # Extract meaningful phrases (3+ word sequences)
+    words = text.lower().split()
+    if len(words) < 3:
+        return words[0] in existing_lower if words else False
+    
+    # Check 3-word sliding windows
+    matches = 0
+    total_windows = max(1, len(words) - 2)
+    for i in range(total_windows):
+        phrase = ' '.join(words[i:i+3])
+        if phrase in existing_lower:
+            matches += 1
+    
+    # If more than 40% of phrases match, consider it present
+    return (matches / total_windows) > 0.4
+
+
 def apply_promotion(candidates: List[PromoteCandidate], memory_file: str, top_n: int = 10) -> str:
-    """Append top candidates to MEMORY.md."""
+    """Apply promotions to MEMORY.md, inserting into matching sections."""
     memory_path = Path(memory_file)
 
     if not memory_path.exists():
@@ -201,29 +284,50 @@ def apply_promotion(candidates: List[PromoteCandidate], memory_file: str, top_n:
     else:
         existing = memory_path.read_text(encoding="utf-8")
 
-    # Filter out candidates already in MEMORY.md (fuzzy)
-    existing_lower = existing.lower()
-    new_candidates = []
-    for c in candidates[:top_n]:
-        # Check if key words already present
-        key_words = [w for w in c.text.lower().split() if len(w) > 4]
-        overlap = sum(1 for w in key_words if w in existing_lower) / max(len(key_words), 1)
-        if overlap < 0.6:
-            new_candidates.append(c)
+    # Filter out candidates already in MEMORY.md
+    new_candidates = [c for c in candidates[:top_n] if not check_already_present(c.text, existing)]
 
     if not new_candidates:
         return "All candidates already present in MEMORY.md."
 
-    # Format new entries
-    ts = date.today().isoformat()
-    section = f"\n\n## Promoted {ts}\n"
+    # Group by category
+    by_category: Dict[str, List[PromoteCandidate]] = {}
     for c in new_candidates:
-        cat_emoji = {"decision": "🔑", "lesson": "💡", "fact": "📌", "contact": "🤝", "platform": "🔧"}
-        emoji = cat_emoji.get(c.category, "-")
-        section += f"- {emoji} {c.text}\n"
+        by_category.setdefault(c.category, []).append(c)
 
-    # Append
-    with open(memory_path, 'a', encoding='utf-8') as f:
-        f.write(section)
+    cat_emoji = {"decision": "🔑", "lesson": "💡", "fact": "📌", "contact": "🤝", "platform": "🔧"}
+    lines = existing.split('\n')
+    inserted = 0
+    unsectioned = []
 
-    return f"✅ Promoted {len(new_candidates)} items to {memory_path.name}"
+    for category, items in by_category.items():
+        section_start = find_section(existing, category)
+        if section_start is not None:
+            # Find end of section
+            section_end = find_section_end(existing, section_start)
+            # Insert before the next section
+            new_lines = []
+            for item in items:
+                emoji = cat_emoji.get(category, "-")
+                new_lines.append(f"- {emoji} {item.text}")
+                inserted += 1
+            # Insert at end of section (before next header)
+            for nl in reversed(new_lines):
+                lines.insert(section_end, nl)
+        else:
+            unsectioned.extend(items)
+
+    # Append unsectioned items at the end
+    if unsectioned:
+        ts = date.today().isoformat()
+        lines.append(f"\n## Promoted {ts}")
+        for item in unsectioned:
+            emoji = cat_emoji.get(item.category, "-")
+            lines.append(f"- {emoji} {item.text}")
+            inserted += 1
+
+    # Write back
+    with open(memory_path, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(lines))
+
+    return f"✅ Promoted {inserted} items to {memory_path.name} ({len(new_candidates) - len(unsectioned)} into sections, {len(unsectioned)} appended)"
